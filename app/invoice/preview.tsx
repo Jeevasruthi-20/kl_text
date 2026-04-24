@@ -4,7 +4,7 @@ import {
   StyleSheet, Alert, Platform 
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Save, ChevronLeft } from 'lucide-react-native';
+import { Save, ChevronLeft, Printer } from 'lucide-react-native';
 import { saveInvoice } from '../../services/database';
 import { generateInvoicePDF } from '../../services/pdfGenerator';
 import { numberToWords } from '../../services/pdfGenerator'; // Re-using word converter
@@ -12,6 +12,22 @@ import { numberToWords } from '../../services/pdfGenerator'; // Re-using word co
 export default function InvoicePreview() {
   const params = useLocalSearchParams();
   const router = useRouter();
+
+  // Inject print styles for web
+  if (Platform.OS === 'web') {
+    const style = document.createElement('style');
+    style.innerHTML = `
+      @media print {
+        header, footer, nav, [data-testid="footer-actions"] { 
+          display: none !important; 
+          visibility: hidden !important;
+        }
+        @page { margin: 0; }
+        body { margin: 0; padding: 0; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
 
   // Guard for missing data
   if (!params.lineItems) {
@@ -33,29 +49,32 @@ export default function InvoicePreview() {
   const grandTotal = parseInt(params.grandTotal as string);
   const totalBags = parseInt(params.totalBags as string);
   const totalQuantity = parseFloat(params.totalQuantity as string);
+  const isReprint = params.isReprint === 'true';
+
+  const buildInvoice = () => ({
+    ...params,
+    lineItems,
+    subtotal,
+    cgst,
+    sgst,
+    grandTotal,
+    totalBags,
+    totalQuantity,
+    invoiceNo: params.invoiceNo as string,
+    date: params.date as string,
+    time: params.time as string,
+    vehicleNo: params.vehicleNo as string,
+    lrNo: params.lrNo as string,
+    clientGst: params.clientGst as string,
+    clientName: params.clientName as string,
+    clientAddress: params.clientAddress as string,
+    clientState: params.clientState as string,
+    clientStateCode: params.clientStateCode as string,
+    addressUsed: params.addressUsed as string,
+  });
 
   const handleSaveAndPrint = async () => {
-    const invoice = {
-      ...params,
-      lineItems,
-      subtotal,
-      cgst,
-      sgst,
-      grandTotal,
-      totalBags,
-      totalQuantity,
-      invoiceNo: params.invoiceNo as string,
-      date: params.date as string,
-      time: params.time as string,
-      vehicleNo: params.vehicleNo as string,
-      lrNo: params.lrNo as string,
-      clientGst: params.clientGst as string,
-      clientName: params.clientName as string,
-      clientAddress: params.clientAddress as string,
-      clientState: params.clientState as string,
-      clientStateCode: params.clientStateCode as string,
-      addressUsed: params.addressUsed as string,
-    };
+    const invoice = buildInvoice();
 
     if (!invoice.clientName || !invoice.clientGst || lineItems.some((i: any) => i.quantity <= 0)) {
       if (Platform.OS === 'web') {
@@ -67,11 +86,19 @@ export default function InvoicePreview() {
     }
 
     try {
-      await saveInvoice(invoice as any);
+      if (!isReprint) {
+        await saveInvoice(invoice as any);
+      }
       await generateInvoicePDF(invoice as any);
       router.push('/invoice/history');
     } catch (e) {
-      Alert.alert("Error", "Failed to save and generate PDF.");
+      Alert.alert("Error", "Failed to generate PDF.");
+    }
+  };
+
+  const handleWebPrint = () => {
+    if (Platform.OS === 'web') {
+      window.print();
     }
   };
 
@@ -213,14 +240,17 @@ export default function InvoicePreview() {
       </ScrollView>
 
       {/* FOOTER ACTIONS */}
-      <View style={styles.footer}>
+      <View testID="footer-actions" style={[styles.footer, styles.noPrint]}>
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <ChevronLeft size={20} color="#fff" />
-          <Text style={styles.btnText}>Edit Invoice</Text>
+          <ChevronLeft size={24} color="#fff" />
         </TouchableOpacity>
+        {Platform.OS === 'web' && (
+          <TouchableOpacity style={styles.webPrintBtn} onPress={handleWebPrint}>
+            <Printer size={24} color="#fff" />
+          </TouchableOpacity>
+        )}
         <TouchableOpacity style={styles.printBtn} onPress={handleSaveAndPrint}>
-          <Save size={20} color="#fff" />
-          <Text style={styles.btnText}>Save & Print PDF</Text>
+          <Save size={24} color="#fff" />
         </TouchableOpacity>
       </View>
     </View>
@@ -228,6 +258,9 @@ export default function InvoicePreview() {
 }
 
 const styles = StyleSheet.create({
+  noPrint: {
+    // This will be handled by the CSS injection below
+  },
   previewCard: {
     backgroundColor: '#fff',
     borderRadius: 0,
@@ -290,33 +323,38 @@ const styles = StyleSheet.create({
   pDeclarationText: { fontSize: 10, color: '#555', lineHeight: 16 },
   footer: {
     position: 'absolute',
-    bottom: 0, left: 0, right: 0,
+    bottom: 30, 
+    left: 0, 
+    right: 0,
     flexDirection: 'row',
+    justifyContent: 'center',
     padding: 15,
-    backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderColor: '#eee',
-    gap: 12,
+    backgroundColor: 'transparent',
+    gap: 30,
   },
   backBtn: {
-    flex: 1,
     backgroundColor: '#7f8c8d',
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 18,
-    borderRadius: 12,
-    gap: 8,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
   },
   printBtn: {
-    flex: 2,
     backgroundColor: '#004aad',
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 18,
-    borderRadius: 12,
-    gap: 8,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+  },
+  webPrintBtn: {
+    backgroundColor: '#2b8a3e',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 60,
+    height: 60,
+    borderRadius: 30,
   },
   btnText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
 });

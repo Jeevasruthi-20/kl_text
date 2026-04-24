@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Tex
 import { useRouter } from 'expo-router';
 import { Printer, Calendar, FileText, ChevronRight, Search } from 'lucide-react-native';
 import { getInvoices, Invoice } from '../../services/database';
-import { generateInvoicePDF } from '../../services/pdfGenerator';
+import { exportInvoicesToCSV } from '../../services/backupService';
 
 export default function InvoiceHistory() {
   const router = useRouter();
@@ -33,7 +33,8 @@ export default function InvoiceHistory() {
     const filtered = invoices.filter(item => 
       item.invoiceNo.toLowerCase().includes(query.toLowerCase()) ||
       item.clientName.toLowerCase().includes(query.toLowerCase()) ||
-      item.clientGst.toLowerCase().includes(query.toLowerCase())
+      item.clientGst.toLowerCase().includes(query.toLowerCase()) ||
+      item.date.includes(query)
     );
     setFilteredInvoices(filtered);
   };
@@ -51,7 +52,33 @@ export default function InvoiceHistory() {
       
       <View style={styles.cardFooter}>
         <Text style={styles.amount}>₹ {item.grandTotal.toLocaleString('en-IN')}</Text>
-        <TouchableOpacity style={styles.printButton} onPress={() => generateInvoicePDF(item)}>
+        <TouchableOpacity style={styles.printButton} onPress={() => {
+            router.push({
+              pathname: '/invoice/preview',
+              params: {
+                invoiceNo: item.invoiceNo,
+                date: item.date,
+                time: item.time,
+                vehicleNo: item.vehicleNo || '',
+                lrNo: item.lrNo || '',
+                clientGst: item.clientGst,
+                clientName: item.clientName,
+                clientAddress: item.clientAddress,
+                clientState: item.clientState,
+                clientStateCode: item.clientStateCode,
+                addressUsed: item.addressUsed || '',
+                lineItems: JSON.stringify(item.lineItems),
+                subtotal: String(item.subtotal),
+                cgst: String(item.cgst),
+                sgst: String(item.sgst),
+                igst: String(item.igst || 0),
+                grandTotal: String(item.grandTotal),
+                totalBags: String(item.totalBags),
+                totalQuantity: String(item.totalQuantity),
+                isReprint: 'true',
+              }
+            });
+          }}>
           <Printer size={20} color="#004aad" />
           <Text style={styles.printText}>Re-print</Text>
         </TouchableOpacity>
@@ -64,10 +91,17 @@ export default function InvoiceHistory() {
       <View style={styles.searchContainer}>
         <TextInput
           style={styles.searchInput}
-          placeholder="Search by name, GST, or Invoice No..."
+          placeholder="Search by name, GST, Date or Invoice No..."
           value={searchQuery}
           onChangeText={handleSearch}
         />
+        <TouchableOpacity 
+          style={styles.backupBtn} 
+          onPress={() => exportInvoicesToCSV(invoices)}
+        >
+          <FileText size={18} color="#fff" />
+          <Text style={styles.backupBtnText}>Backup All (CSV)</Text>
+        </TouchableOpacity>
       </View>
       <FlatList
         data={filteredInvoices}
@@ -99,6 +133,23 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#eee',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  backupBtn: {
+    backgroundColor: '#2b8a3e',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+    gap: 6,
+  },
+  backupBtnText: {
+    color: '#fff',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
   },
   searchInput: {
     backgroundColor: '#f1f3f5',
