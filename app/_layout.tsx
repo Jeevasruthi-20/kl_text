@@ -40,7 +40,8 @@ export default function RootLayout() {
       }}
     >
       <Stack.Screen name="index" options={{ title: 'KL Textiles' }} />
-      <Stack.Screen name="invoice/new" options={{ title: 'New Invoice' }} />
+      <Stack.Screen name="invoice/new" options={{ title: 'New Invoice / புதிய விலைப்பட்டியல்' }} />
+      <Stack.Screen name="invoice/preview" options={{ title: 'Invoice Preview' }} />
       <Stack.Screen name="invoice/history" options={{ title: 'Past Invoices' }} />
     </Stack>
   );

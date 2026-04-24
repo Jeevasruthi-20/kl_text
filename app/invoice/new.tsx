@@ -1,89 +1,91 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert, Platform } from 'react-native';
+import { 
+  View, Text, TextInput, ScrollView, TouchableOpacity, 
+  StyleSheet, Alert, ActivityIndicator, Platform 
+} from 'react-native';
 import { useRouter } from 'expo-router';
 import { Picker } from '@react-native-picker/picker';
-import { Plus, Trash2, Save, Printer, ArrowLeft } from 'lucide-react-native';
+import { Search, Plus, Trash2, Eye } from 'lucide-react-native';
+import { lookupGST, getGstErrorMessage, getOfflineGstData } from '../../services/gstApi';
+import { getLastInvoiceNo } from '../../services/database';
 import { COMPANY_DETAILS, LINE_ITEM_DEFAULTS } from '../../constants/Company';
-import { saveInvoice, getLastInvoiceNo, LineItem, Invoice } from '../../services/database';
-import { generateInvoicePDF } from '../../services/pdfGenerator';
-import { lookupGst } from '../../services/gstApi';
+
+interface LineItem {
+  description: string;
+  hsn: string;
+  bags: number;
+  quantity: number;
+  rate: number;
+  amount: number;
+}
 
 export default function NewInvoice() {
   const router = useRouter();
-  
-  // Header Fields
-  const [invoiceNo, setInvoiceNo] = useState('JW-182');
+
+  // FORM STATE
+  const [invoiceNo, setInvoiceNo] = useState('JW-001');
   const [date, setDate] = useState(new Date().toLocaleDateString('en-GB'));
   const [time, setTime] = useState(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
   const [vehicleNo, setVehicleNo] = useState('');
   const [lrNo, setLrNo] = useState('');
   const [addressUsed, setAddressUsed] = useState(COMPANY_DETAILS.addresses[0]);
 
-  // Bill To Fields
   const [clientGst, setClientGst] = useState('');
   const [clientName, setClientName] = useState('');
   const [clientAddress, setClientAddress] = useState('');
   const [clientState, setClientState] = useState('');
   const [clientStateCode, setClientStateCode] = useState('');
+  const [lookupStatus, setLookupStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [lookupError, setLookupError] = useState<string | null>(null);
 
-  // Line Items
   const [lineItems, setLineItems] = useState<LineItem[]>([
     { description: 'Job Work Charges', hsn: '9988', bags: 0, quantity: 0, rate: 12.50, amount: 0 }
   ]);
 
   useEffect(() => {
-    async function loadLastNo() {
-      const last = await getLastInvoiceNo();
-      if (last) {
-        const num = parseInt(last.replace('JW-', '')) + 1;
-        setInvoiceNo(`JW-${num}`);
-      }
-    }
-    loadLastNo();
+    loadNextInvoiceNo();
   }, []);
 
-  const handleGstLookup = async (gst: string) => {
-    const formattedGst = gst.toUpperCase();
-    setClientGst(formattedGst);
-    
-    if (formattedGst.length === 15) {
-      const details = await lookupGst(formattedGst);
-      if (details) {
-        setClientName(details.companyName);
-        setClientAddress(details.address);
-        setClientState(details.state);
-        setClientStateCode(details.stateCode);
+  const loadNextInvoiceNo = async () => {
+    const last = await getLastInvoiceNo();
+    if (last) {
+      const match = last.match(/JW-(\d+)/);
+      if (match) {
+        const num = parseInt(match[1]) + 1;
+        setInvoiceNo(`JW-${num}`);
       }
     }
   };
 
-  const updateLineItem = (index: number, field: keyof LineItem, value: any) => {
-    const newItems = [...lineItems];
-    const item = { ...newItems[index] };
+  const handleGstLookup = async (gst: string) => {
+    const cleanGst = gst.trim().toUpperCase();
+    setClientGst(cleanGst);
+    if (cleanGst.length !== 15) return;
 
-    if (field === 'bags') {
-      const bags = parseFloat(value) || 0;
-      item.bags = bags;
-      item.quantity = bags * 75;
-      item.amount = item.quantity * item.rate;
-    } else if (field === 'quantity') {
-      item.quantity = parseFloat(value) || 0;
-      item.amount = item.quantity * item.rate;
-    } else if (field === 'rate') {
-      item.rate = parseFloat(value) || 0;
-      item.amount = item.quantity * item.rate;
-    } else if (field === 'description') {
-      item.description = value;
-      const def = LINE_ITEM_DEFAULTS.find(d => d.label === value);
-      if (def) {
-        item.hsn = def.hsn;
-        if (def.rate > 0) item.rate = def.rate;
-        item.amount = item.quantity * item.rate;
+    setLookupStatus('loading');
+    setLookupError(null);
+    try {
+      const result = await lookupGST(cleanGst);
+      if (result.success) {
+        setClientName(result.data.companyName);
+        setClientAddress(result.data.address);
+        setClientState(result.data.state);
+        setClientStateCode(result.data.stateCode);
+        setLookupStatus('success');
+      } else {
+        // Network failed? Try offline state derivation at least
+        const offline = getOfflineGstData(cleanGst);
+        if (offline.state) {
+          setClientState(offline.state);
+          setClientStateCode(offline.stateCode || '');
+        }
+        setLookupStatus('error');
+        setLookupError(getGstErrorMessage(result.error));
       }
+    } catch (e) {
+      setLookupStatus('error');
+      setLookupError('Lookup failed / பிழை ஏற்பட்டது');
     }
-
-    newItems[index] = item;
-    setLineItems(newItems);
   };
 
   const addRow = () => {
@@ -96,358 +98,390 @@ export default function NewInvoice() {
     }
   };
 
-  const calculateTotals = () => {
-    const totalBags = lineItems.reduce((sum, item) => sum + item.bags, 0);
-    const totalQuantity = lineItems.reduce((sum, item) => sum + item.quantity, 0);
-    const subtotal = lineItems.reduce((sum, item) => sum + item.amount, 0);
-    const cgst = subtotal * 0.025;
-    const sgst = subtotal * 0.025;
-    const igst = 0;
-    const grandTotal = Math.round(subtotal + cgst + sgst + igst);
+  const updateLineItem = (index: number, field: keyof LineItem, value: any) => {
+    const newItems = [...lineItems];
+    const item = { ...newItems[index] };
 
-    return { totalBags, totalQuantity, subtotal, cgst, sgst, igst, grandTotal };
+    if (field === 'bags') {
+      const bags = parseInt(value) || 0;
+      item.bags = bags;
+      item.quantity = bags * 75; // Auto calc weight
+    } else if (field === 'quantity') {
+      item.quantity = parseFloat(value) || 0;
+    } else if (field === 'rate') {
+      item.rate = parseFloat(value) || 0;
+    } else if (field === 'description') {
+      item.description = value;
+      const def = LINE_ITEM_DEFAULTS.find(d => d.label === value);
+      if (def) item.hsn = def.hsn;
+    }
+
+    item.amount = item.quantity * item.rate;
+    newItems[index] = item;
+    setLineItems(newItems);
   };
 
-  const handleSave = async () => {
-    if (!clientName || !clientGst || lineItems.some(i => i.quantity === 0)) {
-      Alert.alert("Missing Info", "Please fill all required fields and add items.");
+  const calculateTotals = () => {
+    const subtotal = lineItems.reduce((sum, i) => sum + i.amount, 0);
+    const cgst = subtotal * 0.025;
+    const sgst = subtotal * 0.025;
+    const grandTotal = Math.round(subtotal + cgst + sgst);
+    const totalBags = lineItems.reduce((sum, i) => sum + i.bags, 0);
+    const totalQuantity = lineItems.reduce((sum, i) => sum + i.quantity, 0);
+
+    return { subtotal, cgst, sgst, grandTotal, totalBags, totalQuantity };
+  };
+
+  const goToPreview = () => {
+    if (!clientName || !clientGst || lineItems.some(i => i.quantity <= 0)) {
+      if (Platform.OS === 'web') {
+        window.alert("Missing Info / தகவல் விடுபட்டுள்ளது: Please fill all required fields and ensure quantities are greater than zero.");
+      } else {
+        Alert.alert("Missing Info / தகவல் விடுபட்டுள்ளது", "Please fill all required fields and ensure quantities are greater than zero.");
+      }
       return;
     }
 
     const totals = calculateTotals();
-    const invoice: Invoice = {
-      invoiceNo, date, time, vehicleNo, lrNo,
-      clientGst, clientName, clientAddress, clientState, clientStateCode,
-      addressUsed, lineItems, ...totals
-    };
-
-    try {
-      await saveInvoice(invoice);
-      await generateInvoicePDF(invoice);
-      router.back();
-    } catch (e) {
-      Alert.alert("Error", "Failed to save invoice.");
-    }
+    router.push({
+      pathname: '/invoice/preview',
+      params: {
+        invoiceNo, date, time, vehicleNo, lrNo,
+        clientGst, clientName, clientAddress, 
+        clientState, clientStateCode, addressUsed,
+        lineItems: JSON.stringify(lineItems),
+        subtotal: String(totals.subtotal),
+        cgst: String(totals.cgst),
+        sgst: String(totals.sgst),
+        igst: '0',
+        grandTotal: String(totals.grandTotal),
+        totalBags: String(totals.totalBags),
+        totalQuantity: String(totals.totalQuantity),
+      }
+    });
   };
 
-  const totals = calculateTotals();
+  const handleClear = () => {
+    Alert.alert(
+      "Clear Form / படிவத்தை அழிக்கவும்",
+      "Are you sure you want to clear all fields?",
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "Clear", 
+          style: "destructive",
+          onPress: () => {
+            setClientGst('');
+            setClientName('');
+            setClientAddress('');
+            setClientState('');
+            setClientStateCode('');
+            setVehicleNo('');
+            setLrNo('');
+            setLineItems([{ description: 'Job Work Charges', hsn: '9988', bags: 0, quantity: 0, rate: 12.50, amount: 0 }]);
+            setLookupStatus('idle');
+            setLookupError(null);
+            loadNextInvoiceNo();
+            setDate(new Date().toLocaleDateString('en-GB'));
+            setTime(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
+          }
+        }
+      ]
+    );
+  };
 
   return (
-    <ScrollView style={styles.container}>
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Invoice Header / தலைப்பு</Text>
-        <View style={styles.row}>
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Invoice No</Text>
-            <TextInput style={styles.input} value={invoiceNo} onChangeText={setInvoiceNo} />
+    <View style={{ flex: 1, backgroundColor: '#f1f3f5' }}>
+      <ScrollView 
+        style={styles.container} 
+        contentContainerStyle={{ paddingBottom: 100 }}
+      >
+        {/* COMPANY HEADER CARD */}
+        <View style={styles.headerCard}>
+          <Text style={styles.headerTitle}>K.L. Textiles</Text>
+          <View style={styles.headerPickerWrapper}>
+            <Picker
+              selectedValue={addressUsed}
+              onValueChange={(v) => setAddressUsed(v)}
+              style={{ height: 40 }}
+            >
+              {COMPANY_DETAILS.addresses.map((addr, i) => (
+                <Picker.Item key={i} label={addr.slice(0, 35) + '...'} value={addr} style={{ fontSize: 13 }} />
+              ))}
+            </Picker>
           </View>
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Date</Text>
-            <TextInput style={styles.input} value={date} onChangeText={setDate} />
-          </View>
-        </View>
-        
-        <Text style={styles.label}>Select Address / முகவரி தேர்வு</Text>
-        <View style={styles.pickerContainer}>
-          <Picker
-            selectedValue={addressUsed}
-            onValueChange={(v) => setAddressUsed(v)}
-            style={styles.picker}
-          >
-            {COMPANY_DETAILS.addresses.map((addr, i) => (
-              <Picker.Item key={i} label={addr} value={addr} />
-            ))}
-          </Picker>
+          <Text style={styles.headerMeta}>GST: 33AMDPM0134C1ZV  |  Ph: 9443840407</Text>
         </View>
 
-        <View style={styles.row}>
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Vehicle No</Text>
-            <TextInput style={styles.input} placeholder="TN 33 AB 1234" value={vehicleNo} onChangeText={setVehicleNo} />
+        {/* INVOICE DETAILS */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Invoice Details / விவரங்கள்</Text>
+          <View style={styles.gridRow}>
+            <View style={styles.gridCol}>
+              <Text style={styles.label}>Invoice No</Text>
+              <TextInput style={styles.input} value={invoiceNo} onChangeText={setInvoiceNo} />
+            </View>
+            <View style={styles.gridCol}>
+              <Text style={styles.label}>Date</Text>
+              <TextInput style={styles.input} value={date} onChangeText={setDate} />
+            </View>
           </View>
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>L.R. No</Text>
-            <TextInput style={styles.input} placeholder="Optional" value={lrNo} onChangeText={setLrNo} />
+          
+          <View style={styles.gridRow}>
+            <View style={styles.gridCol}>
+              <Text style={styles.label}>Time</Text>
+              <TextInput style={styles.input} value={time} onChangeText={setTime} />
+            </View>
+            <View style={styles.gridCol}>
+              <Text style={styles.label}>Vehicle No</Text>
+              <TextInput style={styles.input} placeholder="TN 33..." value={vehicleNo} onChangeText={setVehicleNo} />
+            </View>
+          </View>
+
+          <Text style={styles.label}>L.R. No (Optional)</Text>
+          <TextInput style={styles.input} value={lrNo} onChangeText={setLrNo} />
+        </View>
+
+        {/* BILL TO */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Bill To / யாருக்கு</Text>
+          <View style={styles.gridRow}>
+            <View style={{ flex: 2 }}>
+              <Text style={styles.label}>GSTIN</Text>
+              <TextInput 
+                style={[styles.input, { fontWeight: 'bold' }]} 
+                autoCapitalize="characters" 
+                maxLength={15}
+                value={clientGst}
+                onChangeText={(text) => handleGstLookup(text)}
+              />
+            </View>
+            <TouchableOpacity 
+              style={styles.lookupBtn} 
+              onPress={() => handleGstLookup(clientGst)}
+            >
+              {lookupStatus === 'loading' ? <ActivityIndicator size="small" color="#fff" /> : <Search size={18} color="#fff" />}
+              <Text style={styles.lookupBtnText}>Lookup</Text>
+            </TouchableOpacity>
+          </View>
+
+          {lookupError && <Text style={styles.errorText}>{lookupError}</Text>}
+
+          <Text style={styles.label}>Company Name</Text>
+          <TextInput style={styles.input} value={clientName} onChangeText={setClientName} />
+          
+          <Text style={styles.label}>Address</Text>
+          <TextInput 
+            style={[styles.input, { height: 70 }]} 
+            multiline numberOfLines={3} 
+            value={clientAddress} 
+            onChangeText={setClientAddress} 
+          />
+
+          <View style={styles.gridRow}>
+            <View style={{ flex: 2 }}>
+              <Text style={styles.label}>State</Text>
+              <TextInput style={styles.input} value={clientState} onChangeText={setClientState} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.label}>Code</Text>
+              <TextInput style={styles.input} value={clientStateCode} onChangeText={setClientStateCode} maxLength={2} />
+            </View>
           </View>
         </View>
-      </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Bill To / யாருக்கு</Text>
-        <Text style={styles.label}>GSTIN (15 Chars)</Text>
-        <TextInput 
-          style={[styles.input, styles.gstInput]} 
-          autoCapitalize="characters" 
-          maxLength={15}
-          value={clientGst}
-          onChangeText={handleGstLookup}
-          placeholder="Enter GSTIN for lookup"
-        />
-        
-        <Text style={styles.label}>Company Name</Text>
-        <TextInput style={styles.input} value={clientName} onChangeText={setClientName} />
-        
-        <Text style={styles.label}>Address</Text>
-        <TextInput style={[styles.input, { height: 60 }]} multiline value={clientAddress} onChangeText={setClientAddress} />
-        
-        <View style={styles.row}>
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>State</Text>
-            <TextInput style={styles.input} value={clientState} onChangeText={setClientState} />
-          </View>
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Code</Text>
-            <TextInput style={styles.input} value={clientStateCode} onChangeText={setClientStateCode} keyboardType="numeric" />
-          </View>
+        {/* LINE ITEMS */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Line Items / விவரங்கள்</Text>
+          {lineItems.map((item, index) => (
+            <View key={index} style={styles.itemCard}>
+              <View style={styles.gridRow}>
+                <View style={{ flex: 4 }}>
+                  <View style={styles.pickerContainer}>
+                    <Picker
+                      selectedValue={item.description}
+                      onValueChange={(v) => updateLineItem(index, 'description', v)}
+                      style={{ height: 45 }}
+                    >
+                      {LINE_ITEM_DEFAULTS.map((d, i) => <Picker.Item key={i} label={d.label} value={d.label} />)}
+                    </Picker>
+                  </View>
+                  <Text style={styles.hsnTag}>HSN: {item.hsn}</Text>
+                </View>
+                <TouchableOpacity onPress={() => removeRow(index)} style={styles.trashBtn}>
+                  <Trash2 size={20} color="#ff4d4f" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={[styles.gridRow, { marginTop: 12 }]}>
+                <View style={styles.gridCol}>
+                  <Text style={styles.miniLabel}>Bags</Text>
+                  <TextInput style={styles.miniInput} keyboardType="numeric" value={item.bags.toString()} onChangeText={(v) => updateLineItem(index, 'bags', v)} />
+                </View>
+                <View style={styles.gridCol}>
+                  <Text style={styles.miniLabel}>Qty (kg)</Text>
+                  <TextInput style={styles.miniInput} keyboardType="numeric" value={item.quantity.toString()} onChangeText={(v) => updateLineItem(index, 'quantity', v)} />
+                </View>
+                <View style={styles.gridCol}>
+                  <Text style={styles.miniLabel}>Rate</Text>
+                  <TextInput style={styles.miniInput} keyboardType="numeric" value={item.rate.toString()} onChangeText={(v) => updateLineItem(index, 'rate', v)} />
+                </View>
+                <View style={[styles.gridCol, { flex: 1.2 }]}>
+                  <Text style={styles.miniLabel}>Amount</Text>
+                  <Text style={styles.itemAmount}>₹{item.amount.toFixed(2)}</Text>
+                </View>
+              </View>
+            </View>
+          ))}
+          <TouchableOpacity style={styles.addBtn} onPress={addRow}>
+            <Plus size={20} color="#004aad" />
+            <Text style={styles.addBtnText}>Add Another Row</Text>
+          </TouchableOpacity>
         </View>
-      </View>
+      </ScrollView>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Line Items / விவரங்கள்</Text>
-        {lineItems.map((item, index) => (
-          <View key={index} style={styles.itemRow}>
-            <View style={styles.itemHeader}>
-              <Text style={styles.itemNumber}>Item #{index + 1}</Text>
-              <TouchableOpacity style={styles.trashIcon} onPress={() => removeRow(index)}>
-                <Trash2 size={20} color="#ff4d4f" />
-              </TouchableOpacity>
-            </View>
-            
-            <View style={styles.pickerContainer}>
-              <Picker
-                selectedValue={item.description}
-                onValueChange={(v) => updateLineItem(index, 'description', v)}
-                style={styles.picker}
-              >
-                {LINE_ITEM_DEFAULTS.map((d, i) => (
-                  <Picker.Item key={i} label={d.label} value={d.label} />
-                ))}
-                <Picker.Item label="Other / இதர" value="Other" />
-              </Picker>
-            </View>
-
-            <View style={styles.row}>
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Bags</Text>
-                <TextInput style={styles.input} keyboardType="numeric" value={item.bags.toString()} onChangeText={(v) => updateLineItem(index, 'bags', v)} />
-              </View>
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Weight (kg)</Text>
-                <TextInput style={styles.input} keyboardType="numeric" value={item.quantity.toString()} onChangeText={(v) => updateLineItem(index, 'quantity', v)} />
-              </View>
-            </View>
-
-            <View style={styles.row}>
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Rate</Text>
-                <TextInput style={styles.input} keyboardType="numeric" value={item.rate.toString()} onChangeText={(v) => updateLineItem(index, 'rate', v)} />
-              </View>
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Amount</Text>
-                <TextInput style={[styles.input, styles.readOnly]} value={item.amount.toFixed(2)} editable={false} />
-              </View>
-            </View>
-          </View>
-        ))}
-
-        <TouchableOpacity style={styles.addButton} onPress={addRow}>
-          <Plus size={20} color="#004aad" />
-          <Text style={styles.addButtonText}>Add Row / வரிசை சேர்க்க</Text>
+      {/* BOTTOM ACTIONS */}
+      <View style={styles.footer}>
+        <TouchableOpacity style={styles.clearBtn} onPress={handleClear}>
+          <Text style={styles.btnTextSecondary}>Clear Form</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.previewBtn} onPress={goToPreview}>
+          <Eye size={20} color="#fff" />
+          <Text style={styles.btnText}>Preview Invoice</Text>
         </TouchableOpacity>
       </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Totals / மொத்தம்</Text>
-        <View style={styles.totalRow}>
-          <Text style={styles.totalLabel}>Subtotal:</Text>
-          <Text style={styles.totalValue}>{totals.subtotal.toFixed(2)}</Text>
-        </View>
-        <View style={styles.totalRow}>
-          <Text style={styles.totalLabel}>CGST (2.5%):</Text>
-          <Text style={styles.totalValue}>{totals.cgst.toFixed(2)}</Text>
-        </View>
-        <View style={styles.totalRow}>
-          <Text style={styles.totalLabel}>SGST (2.5%):</Text>
-          <Text style={styles.totalValue}>{totals.sgst.toFixed(2)}</Text>
-        </View>
-        <View style={[styles.totalRow, { marginTop: 8, borderTopWidth: 1, borderTopColor: '#eee', paddingTop: 8 }]}>
-          <Text style={styles.totalLabel}>Total (Before Rounding):</Text>
-          <Text style={styles.totalValue}>₹ {(totals.subtotal + totals.cgst + totals.sgst).toFixed(2)}</Text>
-        </View>
-        <View style={styles.totalRow}>
-          <Text style={styles.totalLabel}>Rounding:</Text>
-          <Text style={[styles.totalValue, { color: '#666' }]}>
-            { (totals.grandTotal - (totals.subtotal + totals.cgst + totals.sgst)).toFixed(2) }
-          </Text>
-        </View>
-        <View style={[styles.totalRow, styles.grandTotalRow]}>
-          <Text style={styles.grandTotalLabel}>Grand Total / மொத்தம்:</Text>
-          <Text style={styles.grandTotalValue}>₹ {totals.grandTotal}</Text>
-        </View>
-      </View>
-
-      <View style={styles.actionButtons}>
-        <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
-          <Save size={24} color="#fff" />
-          <Text style={styles.saveButtonText}>Save & Print</Text>
-        </TouchableOpacity>
-      </View>
-      
-      <View style={{ height: 40 }} />
-    </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f1f3f5',
+  container: { flex: 1 },
+  headerCard: {
+    backgroundColor: '#fff',
+    margin: 10,
+    padding: 15,
+    borderRadius: 15,
+    alignItems: 'center',
+    elevation: 3,
   },
+  headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#004aad', marginBottom: 10 },
+  headerPickerWrapper: {
+    width: '100%',
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 10,
+    marginBottom: 8,
+    overflow: 'hidden',
+  },
+  headerMeta: { fontSize: 12, color: '#666' },
   section: {
     backgroundColor: '#fff',
-    margin: 12,
-    padding: 16,
-    borderRadius: 12,
+    margin: 10,
+    padding: 15,
+    borderRadius: 15,
     elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
   },
   sectionTitle: {
-    fontSize: 18,
-    fontFamily: 'Outfit_700Bold',
+    fontSize: 16,
+    fontWeight: 'bold',
     color: '#004aad',
-    marginBottom: 16,
+    marginBottom: 15,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: '#f1f3f5',
     paddingBottom: 8,
   },
-  label: {
-    fontSize: 14,
-    fontFamily: 'Outfit_400Regular',
-    color: '#666',
-    marginBottom: 4,
-  },
+  gridRow: { flexDirection: 'row', gap: 12, marginBottom: 10 },
+  gridCol: { flex: 1 },
+  label: { fontSize: 14, color: '#555', marginBottom: 5, fontWeight: '500' },
   input: {
     borderWidth: 1,
-    borderColor: '#ced4da',
-    borderRadius: 12,
-    padding: 16,
-    fontSize: 18,
-    marginBottom: 16,
-    color: '#333',
-    backgroundColor: '#fff',
+    borderColor: '#e1e4e8',
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 15,
+    backgroundColor: '#fafbfc',
   },
-  gstInput: {
-    fontFamily: 'monospace',
-    letterSpacing: 2,
-    fontSize: 22,
-    fontWeight: 'bold',
-  },
-  readOnly: {
-    backgroundColor: '#f8f9fa',
-    color: '#999',
-  },
-  row: {
+  lookupBtn: {
+    backgroundColor: '#004aad',
+    borderRadius: 10,
+    paddingHorizontal: 15,
+    height: 50,
     flexDirection: 'row',
-    gap: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 22,
+    gap: 8,
   },
-  inputGroup: {
-    flex: 1,
+  lookupBtnText: { color: '#fff', fontSize: 14, fontWeight: 'bold' },
+  errorText: { color: '#e74c3c', fontSize: 12, marginTop: -5, marginBottom: 10 },
+  itemCard: {
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
   },
   pickerContainer: {
     borderWidth: 1,
-    borderColor: '#ced4da',
+    borderColor: '#e1e4e8',
     borderRadius: 8,
-    marginBottom: 12,
+    backgroundColor: '#fff',
     overflow: 'hidden',
   },
-  picker: {
-    height: Platform.OS === 'ios' ? 150 : 50,
-  },
-  itemRow: {
+  hsnTag: { fontSize: 11, color: '#888', marginTop: 4, marginLeft: 2 },
+  trashBtn: { padding: 10 },
+  miniLabel: { fontSize: 12, color: '#888', marginBottom: 4 },
+  miniInput: {
     borderWidth: 1,
-    borderColor: '#f0f0f0',
+    borderColor: '#e1e4e8',
     borderRadius: 8,
-    padding: 12,
-    marginBottom: 16,
-    backgroundColor: '#fafafa',
+    padding: 8,
+    fontSize: 14,
+    backgroundColor: '#fff',
   },
-  itemHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  itemNumber: {
-    fontWeight: 'bold',
-    color: '#666',
-  },
-  addButton: {
+  itemAmount: { fontSize: 14, fontWeight: 'bold', color: '#2ecc71', marginTop: 8 },
+  addBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 12,
-    borderWidth: 1,
+    padding: 15,
+    borderWidth: 2,
     borderStyle: 'dashed',
     borderColor: '#004aad',
-    borderRadius: 8,
+    borderRadius: 12,
+    backgroundColor: '#f0f7ff',
   },
-  addButtonText: {
-    marginLeft: 8,
-    color: '#004aad',
-    fontFamily: 'Outfit_700Bold',
-  },
-  totalRow: {
+  addBtnText: { color: '#004aad', fontSize: 15, fontWeight: 'bold', marginLeft: 8 },
+  footer: {
+    position: 'absolute',
+    bottom: 0, left: 0, right: 0,
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 4,
+    padding: 15,
+    backgroundColor: '#fff',
+    borderTopWidth: 1,
+    borderColor: '#eee',
+    gap: 12,
+    elevation: 10,
   },
-  totalLabel: {
-    color: '#666',
-  },
-  totalValue: {
-    fontFamily: 'Outfit_700Bold',
-  },
-  grandTotalRow: {
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 2,
-    borderTopColor: '#004aad',
-  },
-  grandTotalLabel: {
-    fontSize: 20,
-    fontFamily: 'Outfit_700Bold',
-    color: '#004aad',
-  },
-  grandTotalValue: {
-    fontSize: 24,
-    fontFamily: 'Outfit_700Bold',
-    color: '#2b8a3e',
-  },
-  actionButtons: {
-    padding: 12,
-  },
-  saveButton: {
-    backgroundColor: '#004aad',
+  previewBtn: {
+    flex: 2,
+    backgroundColor: '#2a4a3e',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 20,
-    borderRadius: 16,
-    elevation: 4,
+    padding: 16,
+    borderRadius: 12,
+    gap: 10,
   },
-  saveButtonText: {
-    color: '#fff',
-    fontSize: 20,
-    fontFamily: 'Outfit_700Bold',
-    marginLeft: 12,
+  clearBtn: {
+    flex: 1,
+    backgroundColor: '#95a5a6',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+    borderRadius: 12,
   },
-  // Hide UI elements during accidental browser printing
-  '@media print': {
-    saveButton: { display: 'none' },
-    addButton: { display: 'none' },
-    trashIcon: { display: 'none' },
-    header: { display: 'none' },
-  }
+  btnText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  btnTextSecondary: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
 });

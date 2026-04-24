@@ -1,194 +1,265 @@
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
-import { Platform } from 'react-native';
-import { Invoice, LineItem } from './database';
+import { Invoice } from './database';
 import { COMPANY_DETAILS } from '../constants/Company';
 
-const formatCurrency = (amount: number) => {
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-  }).format(amount);
-};
+const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
 
-const numberToWords = (num: number) => {
-  const a = ['', 'One ', 'Two ', 'Three ', 'Four ', 'Five ', 'Six ', 'Seven ', 'Eight ', 'Nine ', 'Ten ', 'Eleven ', 'Twelve ', 'Thirteen ', 'Fourteen ', 'Fifteen ', 'Sixteen ', 'Seventeen ', 'Eighteen ', 'Nineteen '];
-  const b = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
-
-  function inWords(n: any): string {
-    if (n == 0) return 'Zero ';
-    let n_arr = ('000000000' + n).substr(-9).match(/^(\d{2})(\d{2})(\d{2})(\d{1})(\d{2})$/);
-    if (!n_arr) return ''; 
-    let str = '';
-    str += (Number(n_arr[1]) != 0) ? (a[Number(n_arr[1])] || b[n_arr[1][0]] + ' ' + a[n_arr[1][1]]) + 'Crore ' : '';
-    str += (Number(n_arr[2]) != 0) ? (a[Number(n_arr[2])] || b[n_arr[2][0]] + ' ' + a[n_arr[2][1]]) + 'Lakh ' : '';
-    str += (Number(n_arr[3]) != 0) ? (a[Number(n_arr[3])] || b[n_arr[3][0]] + ' ' + a[n_arr[3][1]]) + 'Thousand ' : '';
-    str += (Number(n_arr[4]) != 0) ? (a[Number(n_arr[4])] || b[n_arr[4][0]] + ' ' + a[n_arr[4][1]]) + 'Hundred ' : '';
-    str += (Number(n_arr[5]) != 0) ? ((str != '') ? 'and ' : '') + (a[Number(n_arr[5])] || b[n_arr[5][0]] + ' ' + a[n_arr[5][1]]) + 'Rupees ' : '';
-    return str;
+export function numberToWords(n: number): string {
+  if (n === 0) return 'Zero';
+  function convert(num: number): string {
+    if (num === 0) return '';
+    if (num < 20) return ones[num] + ' ';
+    if (num < 100) return tens[Math.floor(num / 10)] + ' ' + (ones[num % 10] ? ones[num % 10] + ' ' : '');
+    if (num < 1000) return ones[Math.floor(num / 100)] + ' Hundred ' + convert(num % 100);
+    if (num < 100000) return convert(Math.floor(num / 1000)) + 'Thousand ' + convert(num % 1000);
+    if (num < 10000000) return convert(Math.floor(num / 100000)) + 'Lakh ' + convert(num % 100000);
+    return convert(Math.floor(num / 10000000)) + 'Crore ' + convert(num % 10000000);
   }
-  
-  const rounded = Math.round(num);
-  return inWords(rounded) + 'Only';
-};
+  return 'Rupees: ' + convert(n).trim() + ' Only';
+}
 
-export const generateInvoicePDF = async (invoice: Invoice) => {
-  const originalTotal = invoice.subtotal + invoice.cgst + invoice.sgst;
-  const roundedTotal = Math.round(originalTotal);
-  const amountInWords = numberToWords(roundedTotal);
-  
-  const html = `
-    <html>
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
+export const generateInvoicePDF = async (invoice: Invoice): Promise<void> => {
+  try {
+    const primaryAddress = invoice.addressUsed || COMPANY_DETAILS.addresses[0] || '';
+    const additionalAddress = COMPANY_DETAILS.addresses.find((addr) => addr !== primaryAddress) || '';
+    const companyName = COMPANY_DETAILS.name.toUpperCase();
+    const phoneText = COMPANY_DETAILS.phones.join(' / ');
+
+    const invoiceHTML = `
+      <!DOCTYPE html>
+      <html>
       <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no" />
+        <meta charset="utf-8">
         <style>
-          body { font-family: 'Helvetica', sans-serif; padding: 20px; color: #333; font-size: 11px; line-height: 1.4; }
-          .header-table { width: 100%; border-bottom: 2px solid #004aad; padding-bottom: 15px; margin-bottom: 15px; }
-          .logo-box { width: 70px; height: 70px; border: 2px solid #004aad; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #004aad; font-size: 20px; }
-          .company-name { font-size: 36px; font-weight: bold; color: #004aad; margin: 0; text-transform: uppercase; }
-          .company-details { margin: 2px 0; font-size: 10px; color: #555; }
-          .invoice-title { text-align: center; font-size: 18px; font-weight: bold; margin: 20px 0; background-color: #f8f9fa; padding: 8px; border: 1px solid #ddd; text-transform: uppercase; }
-          .info-grid { display: flex; justify-content: space-between; margin-bottom: 20px; }
-          .info-box { width: 48%; }
-          .info-label { font-weight: bold; color: #004aad; margin-bottom: 5px; display: block; border-bottom: 1px solid #eee; }
-          table.items { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-          table.items th { background-color: #004aad; color: white; padding: 8px; font-size: 10px; text-transform: uppercase; border: 1px solid #004aad; }
-          table.items td { border: 1px solid #ddd; padding: 8px; text-align: center; font-size: 10px; }
-          .summary-section { display: flex; justify-content: space-between; margin-top: 20px; align-items: flex-start; }
-          .words-container { width: 55%; border: 1px solid #eee; padding: 10px; background-color: #fafafa; }
-          .totals-container { width: 40%; }
-          .totals-table { width: 100%; border-collapse: collapse; }
-          .totals-table td { padding: 4px 8px; }
-          .totals-table .label { text-align: left; font-weight: bold; }
-          .totals-table .val { text-align: right; }
-          .grand-total-row { background-color: #f8f9fa; font-size: 13px; border-top: 2px solid #004aad; border-bottom: 2px solid #004aad; }
-          .bank-section { margin-top: 20px; padding: 12px; border: 1px solid #eee; background-color: #fafafa; font-size: 10px; }
-          .footer-signs { margin-top: 60px; display: flex; justify-content: space-between; }
-          .signatory-box { width: 200px; text-align: center; border-top: 1px solid #333; padding-top: 8px; }
+          body { font-family: 'Arial', sans-serif; color: #000; margin: 0; padding: 20px; font-size: 11px; }
+          .container { border: 1px solid #000; padding: 0; }
+          
+          /* Header Section */
+          .header-table { width: 100%; border-bottom: 1px solid #000; border-collapse: collapse; }
+          .header-table td { padding: 8px; vertical-align: top; border: 1px solid #000; }
+          .logo-cell { width: 100px; text-align: center; }
+          .company-cell { text-align: center; }
+          .meta-cell { width: 180px; }
+          
+          .company-name { font-size: 18px; font-weight: bold; color: #d32f2f; margin: 0; }
+          .company-details { font-size: 10px; line-height: 1.3; margin-top: 4px; }
+          
+          .meta-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+          .meta-label { font-weight: bold; width: 80px; }
+          
+          .tax-invoice-banner { background-color: #eee; text-align: center; font-weight: bold; padding: 4px; border-bottom: 1px solid #000; font-size: 12px; }
+          
+          /* Address Section */
+          .address-table { width: 100%; border-collapse: collapse; border-bottom: 1px solid #000; }
+          .address-table td { width: 50%; padding: 8px; vertical-align: top; border: 1px solid #000; }
+          .address-title { font-weight: bold; margin-bottom: 4px; color: #004aad; }
+          
+          /* Items Table */
+          .items-table { width: 100%; border-collapse: collapse; }
+          .items-table th { border: 1px solid #000; padding: 6px; font-size: 10px; background-color: #f9f9f9; }
+          .items-table td { border-left: 1px solid #000; border-right: 1px solid #000; padding: 6px; text-align: center; }
+          .items-table .text-left { text-align: left; }
+          .items-table .text-right { text-align: right; }
+          .items-table tr.last-row td { border-bottom: 1px solid #000; padding-top: 40px; } /* Empty space for table height */
+          .items-table tr.total-row td { border-top: 1px solid #000; border-bottom: 1px solid #000; font-weight: bold; background-color: #f9f9f9; }
+          
+          /* Summary Section */
+          .summary-table { width: 100%; border-collapse: collapse; }
+          .summary-table td { border: 1px solid #000; vertical-align: top; padding: 8px; }
+          .words-cell { width: 55%; }
+          .tax-cell { width: 45%; padding: 0; }
+          
+          .tax-breakdown-table { width: 100%; border-collapse: collapse; }
+          .tax-breakdown-table td { border: none; border-bottom: 1px solid #000; padding: 4px 8px; }
+          .tax-breakdown-table tr:last-child td { border-bottom: none; }
+          .tax-label { font-weight: bold; }
+          .tax-val { text-align: right; font-weight: bold; }
+          
+          .bank-details-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+          .bank-details-table td { border: none; padding: 2px 0; font-size: 10px; }
+          
+          /* Signature Section */
+          .footer-table { width: 100%; border-collapse: collapse; }
+          .footer-table td { border: 1px solid #000; padding: 8px; vertical-align: top; }
+          .declaration-cell { width: 55%; font-size: 9px; line-height: 1.3; }
+          .signature-cell { width: 45%; text-align: center; padding-top: 10px; }
+          
+          .signature-company { font-weight: bold; color: #d32f2f; margin-bottom: 40px; }
+          .signature-role { font-weight: bold; }
         </style>
       </head>
       <body>
-        <table class="header-table">
-          <tr>
-            <td style="width: 80px;">
-              <div class="logo-box">KLT</div>
-            </td>
-            <td>
-              <h1 class="company-name">${COMPANY_DETAILS.name}</h1>
-              <p class="company-details"><strong>GSTIN: ${COMPANY_DETAILS.gst}</strong> | <strong>Cell: ${COMPANY_DETAILS.phones.join(' / ')}</strong></p>
-              <p class="company-details">${invoice.addressUsed}</p>
-            </td>
-          </tr>
-        </table>
-
-        <div class="invoice-title">Job Work Invoice</div>
-
-        <div class="info-grid">
-          <div class="info-box">
-            <span class="info-label">BILL TO:</span>
-            <strong>${invoice.clientName}</strong><br/>
-            ${invoice.clientAddress}<br/>
-            <strong>GSTIN: ${invoice.clientGst}</strong><br/>
-            State: ${invoice.clientState} (Code: ${invoice.clientStateCode})
-          </div>
-          <div class="info-box" style="text-align: right;">
-            <span class="info-label">INVOICE DETAILS:</span>
-            <strong>Invoice No: ${invoice.invoiceNo}</strong><br/>
-            Date: ${invoice.date}<br/>
-            Time: ${invoice.time}<br/>
-            Vehicle No: ${invoice.vehicleNo || 'Self'}<br/>
-            L.R. No: ${invoice.lrNo || '-'}
-          </div>
-        </div>
-
-        <table class="items">
-          <thead>
+        <div style="text-align: right; font-size: 10px; margin-bottom: 4px;">(Duplicate)</div>
+        <div class="container">
+          <table class="header-table">
             <tr>
-              <th style="width: 40px;">S.No</th>
-              <th>Description</th>
-              <th>HSN Code</th>
-              <th>No.Bags</th>
-              <th>Qty(kg)</th>
-              <th>Rate</th>
-              <th>Amount</th>
+              <td class="logo-cell">
+                <!-- Placeholder for logo as seen in sample -->
+                <div style="width: 80px; height: 80px; border: 1px solid #ddd; display: flex; align-items: center; justify-content: center; color: #ddd;">LOGO</div>
+              </td>
+              <td class="company-cell">
+                <p class="company-name">${escapeHtml(companyName)}</p>
+                <div class="company-details">
+                  ${escapeHtml(primaryAddress)}<br/>
+                  ${additionalAddress ? `${escapeHtml(additionalAddress)}<br/>` : ''}
+                  Email: kltextiles@gmail.com<br/>
+                  CELL: ${escapeHtml(phoneText)}<br/>
+                  <strong>GSTIN : ${escapeHtml(COMPANY_DETAILS.gst)}</strong>
+                </div>
+              </td>
+              <td class="meta-cell">
+                <div class="meta-row"><span class="meta-label">Bill No</span><span>: ${invoice.invoiceNo}</span></div>
+                <div class="meta-row"><span class="meta-label">Date</span><span>: ${invoice.date}</span></div>
+                <div class="meta-row"><span class="meta-label">VEHICLE NO</span><span>: ${invoice.vehicleNo || '-'}</span></div>
+                <div class="meta-row"><span class="meta-label">Eway Bill No</span><span>: ${invoice.lrNo || '-'}</span></div>
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            ${invoice.lineItems.map((item, index) => `
-              <tr>
-                <td>${index + 1}</td>
-                <td style="text-align: left;">${item.description}</td>
-                <td>${item.hsn}</td>
-                <td>${item.bags}</td>
-                <td>${item.quantity.toFixed(2)}</td>
-                <td>${item.rate.toFixed(2)}</td>
-                <td style="text-align: right;">${item.amount.toFixed(2)}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
+          </table>
 
-        <div class="summary-section">
-          <div class="words-container">
-            <strong>Amount in Words:</strong><br/>
-            Rupees: ${amountInWords}<br/><br/>
-            <div class="bank-section" style="margin-top: 10px; padding: 0; background: none; border: none;">
-              <strong>Bank Details:</strong><br/>
-              Bank: ${COMPANY_DETAILS.bank.name}<br/>
-              A/c No: ${COMPANY_DETAILS.bank.accountNo}<br/>
-              IFSC: ${COMPANY_DETAILS.bank.ifsc} | Branch: ${COMPANY_DETAILS.bank.branch}
-            </div>
-          </div>
-          <div class="totals-container">
-            <table class="totals-table">
-              <tr>
-                <td class="label">Total Bags:</td>
-                <td class="val">${invoice.totalBags}</td>
-              </tr>
-              <tr>
-                <td class="label">Total Qty (kg):</td>
-                <td class="val">${invoice.totalQuantity.toFixed(2)}</td>
-              </tr>
-              <tr>
-                <td class="label">Subtotal:</td>
-                <td class="val">${invoice.subtotal.toFixed(2)}</td>
-              </tr>
-              <tr>
-                <td class="label">SGST (2.5%):</td>
-                <td class="val">${invoice.sgst.toFixed(2)}</td>
-              </tr>
-              <tr>
-                <td class="label">CGST (2.5%):</td>
-                <td class="val">${invoice.cgst.toFixed(2)}</td>
-              </tr>
-              <tr>
-                <td class="label">Rounding:</td>
-                <td class="val">${(invoice.grandTotal - (invoice.subtotal + invoice.cgst + invoice.sgst)).toFixed(2)}</td>
-              </tr>
-              <tr class="grand-total-row">
-                <td class="label">TOTAL AMOUNT:</td>
-                <td class="val"><strong>₹ ${invoice.grandTotal}</strong></td>
-              </tr>
-            </table>
-          </div>
-        </div>
+          <div class="tax-invoice-banner">TAX INVOICE</div>
 
-        <div class="footer-signs">
-          <div class="signatory-box">Receiver's Signature</div>
-          <div class="signatory-box">
-            For <strong>${COMPANY_DETAILS.name}</strong><br/><br/><br/>
-            Authorized Signatory
-          </div>
+          <table class="address-table">
+            <tr>
+              <td style="width: 100%;">
+                <div class="address-title">Billing & Shipping Address</div>
+                <strong>To, ${invoice.clientName}</strong><br/>
+                ${invoice.clientAddress}<br/><br/>
+                <strong>GSTIN : ${invoice.clientGst}</strong>
+              </td>
+            </tr>
+          </table>
+
+          <table class="items-table">
+            <thead>
+              <tr>
+                <th style="width: 30px;">S.No</th>
+                <th>Description of Goods</th>
+                <th style="width: 70px;">HSN Code</th>
+                <th style="width: 40px;">No of Bags</th>
+                <th style="width: 70px;">Qty in Kgs</th>
+                <th style="width: 60px;">Rate</th>
+                <th style="width: 90px;">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${invoice.lineItems.map((item, index) => `
+                <tr>
+                  <td>${index + 1}</td>
+                  <td class="text-left">${item.description}</td>
+                  <td>${item.hsn}</td>
+                  <td>${item.bags}</td>
+                  <td>${item.quantity.toFixed(3)}</td>
+                  <td>${item.rate.toFixed(2)}</td>
+                  <td class="text-right">${item.amount.toFixed(2)}</td>
+                </tr>
+              `).join('')}
+              <tr class="last-row">
+                <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+              </tr>
+              <tr class="total-row">
+                <td colspan="2">E.&O.E</td>
+                <td class="text-right">Total</td>
+                <td>${invoice.totalBags}</td>
+                <td>${invoice.totalQuantity.toFixed(3)}</td>
+                <td></td>
+                <td class="text-right">${invoice.subtotal.toFixed(2)}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <table class="summary-table">
+            <tr>
+              <td class="words-cell">
+                <strong><u>Rupees in Words</u></strong><br/>
+                <div style="margin-top: 8px; font-weight: bold; text-transform: uppercase;">
+                  ${numberToWords(invoice.grandTotal).replace('Rupees: ', '').replace(' Only', '')} ONLY
+                </div>
+                
+                <div style="margin-top: 20px;">
+                  <strong><u>Bank Details:</u></strong><br/>
+                  <table class="bank-details-table">
+                    <tr><td style="width: 60px;">Bank</td><td>: <strong>${escapeHtml(COMPANY_DETAILS.bank.name.toUpperCase())}</strong></td></tr>
+                    <tr><td>A/C NO</td><td>: <strong>${escapeHtml(COMPANY_DETAILS.bank.accountNo)}</strong></td></tr>
+                    <tr><td>Branch</td><td>: <strong>${escapeHtml(COMPANY_DETAILS.bank.branch.toUpperCase())}</strong></td></tr>
+                    <tr><td>IFSC CODE</td><td>: <strong>${escapeHtml(COMPANY_DETAILS.bank.ifsc.toUpperCase())}</strong></td></tr>
+                  </table>
+                </div>
+              </td>
+              <td class="tax-cell">
+                <table class="tax-breakdown-table">
+                  <tr>
+                    <td class="tax-label">CGST</td>
+                    <td style="width: 60px;">2.5 %</td>
+                    <td class="tax-val">${invoice.cgst.toFixed(2)}</td>
+                  </tr>
+                  <tr>
+                    <td class="tax-label">SGST</td>
+                    <td>2.5 %</td>
+                    <td class="tax-val">${invoice.sgst.toFixed(2)}</td>
+                  </tr>
+                  <tr>
+                    <td class="tax-label">IGST</td>
+                    <td>0 %</td>
+                    <td class="tax-val">0.00</td>
+                  </tr>
+                  <tr>
+                    <td class="tax-label" colspan="2">Net Amount</td>
+                    <td class="tax-val">${(invoice.subtotal + invoice.cgst + invoice.sgst).toFixed(2)}</td>
+                  </tr>
+                  <tr>
+                    <td class="tax-label" colspan="2">Round Off</td>
+                    <td class="tax-val">${(invoice.grandTotal - (invoice.subtotal + invoice.cgst + invoice.sgst)).toFixed(2)}</td>
+                  </tr>
+                  <tr style="background-color: #eee;">
+                    <td class="tax-label" colspan="2" style="font-size: 12px;">Total Amount after Tax</td>
+                    <td class="tax-val" style="font-size: 13px;">${invoice.grandTotal.toFixed(2)}</td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+
+          <table class="footer-table">
+            <tr>
+              <td class="declaration-cell">
+                <strong>Declaration:</strong> We Declare that this Invoice shows the actual price of the goods and that all particulars are true and correct.<br/>
+                * 12% Interest will be Charged after 15 days payment.
+              </td>
+              <td class="signature-cell">
+                <div class="signature-company">For ${escapeHtml(companyName)}</div>
+                <div style="height: 40px;"></div> <!-- Signature space -->
+                <div class="signature-role">Authorised Signatory</div>
+              </td>
+            </tr>
+          </table>
         </div>
       </body>
-    </html>
-  `;
+      </html>
+    `;
 
-  if (Platform.OS === 'web') {
-    // On Web, this directly opens the print dialog with ONLY the formal HTML
-    await Print.printAsync({ html });
-  } else {
-    const { uri } = await Print.printToFileAsync({ html });
-    await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf' });
+    const { uri } = await Print.printToFileAsync({ 
+      html: invoiceHTML,
+      base64: false 
+    });
+
+    await Sharing.shareAsync(uri, {
+      mimeType: 'application/pdf',
+      dialogTitle: `Invoice ${invoice.invoiceNo} - ${COMPANY_DETAILS.name}`,
+      UTI: 'com.adobe.pdf',
+    });
+
+  } catch (error) {
+    console.error('PDF Generation Error:', error);
+    throw error;
   }
 };
